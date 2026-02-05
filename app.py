@@ -1,0 +1,200 @@
+import streamlit as st
+import os
+import time
+import ast
+from dotenv import load_dotenv
+
+from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_text_splitters import CharacterTextSplitter
+from langchain_community.embeddings import HuggingFaceEmbeddings
+from langchain_community.vectorstores import FAISS
+from langchain_core.tools import tool
+from langchain_classic.agents import AgentExecutor, create_tool_calling_agent
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.messages import HumanMessage, AIMessage
+
+st.set_page_config(page_title="AI 自動化威脅偵測平台", page_icon="🛡️", layout="wide")
+
+# 側邊欄設定 (API Key 輸入與系統狀態)
+with st.sidebar:
+    st.image("https://cdn-icons-png.flaticon.com/512/2092/2092663.png", width=100)
+    st.title("Threat Hunter AI")
+    st.markdown("---")
+    
+    # 優先從環境變數讀取 Key，如果沒有則讓使用者輸入
+    load_dotenv()
+    env_key = os.getenv("GOOGLE_API_KEY")
+    api_key = st.text_input("輸入 Gemini API Key", value=env_key if env_key else "", type="password")
+    
+    st.markdown("### 系統狀態")
+    if api_key:
+        st.success("API Key 已載入")
+    else:
+        st.error("請輸入 API Key")
+
+    st.markdown("---")
+    st.markdown("### 功能說明")
+    st.markdown("- 🔍 **RAG 知識庫**: 內建資安 SOP")
+    st.markdown("- 🛠️ **IP 掃描**: 模擬檢查惡意 IP")
+    st.markdown("- 🤖 **Agent**: 自主決策與分析")
+
+# 如果沒有 Key，停止執行
+if not api_key:
+    st.info("請在左側輸入您的 Google API Key 以啟動系統")
+    st.stop()
+
+os.environ["GOOGLE_API_KEY"] = api_key
+
+# ==========================================
+# 建立模擬知識庫 (RAG System)
+# ==========================================
+@st.cache_resource # 使用快取，避免每次重新整理都要重跑
+def init_rag_system():
+    # 模擬公司內部的資安標準作業程序 (SOP)
+    sop_data = """
+    【資安事件等級定義】
+    - Critical (嚴重): 涉及核心資料庫外洩、勒索病毒感染。需立即斷網並通報 CISO。
+    - High (高): 偵測到外部惡意 IP 的持續掃描或暴力破解嘗試。需封鎖 IP。
+    - Medium (中): 員工電腦偵測到潛在惡意軟體，已被防毒軟體隔離。
+    - Low (低): 一般廣告軟體或非關鍵系統的異常登入。
+
+    【IP 封鎖標準作業程序 (SOP)】
+    1. 確認該 IP 在過去 24 小時內的連線次數。
+    2. 使用 Threat Intelligence 工具查詢該 IP 信譽分數。
+    3. 若信譽分數 < 50 或涉及已知的僵屍網路，立即在防火牆進行封鎖。
+    4. 記錄事件並產出報告。
+
+    【Log 分析指南】
+    - 若 Log 中出現 'Failed password' 超過 5 次，視為暴力破解。
+    - 若出現 'UNION SELECT' 等關鍵字，視為 SQL Injection 攻擊。
+    """
+    
+    text_splitter = CharacterTextSplitter(chunk_size=200, chunk_overlap=20)
+    docs = text_splitter.create_documents([sop_data])
+    
+    # 使用 HuggingFace 免費模型建立向量庫
+    embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+    vector_db = FAISS.from_documents(docs, embeddings)
+    return vector_db.as_retriever()
+
+retriever = init_rag_system()
+
+# ==========================================
+# 定義 Agent 的工具 (Tools)
+# ==========================================
+@tool
+def check_ip_reputation(ip_address: str):
+    """
+    查詢特定 IP 位址的信譽分數與地理位置。
+    當使用者提供 IP 位址並詢問其安全性時使用此工具。
+    """
+    # 這裡模擬外部 API 的回傳結果
+    time.sleep(1) # 假裝在連線
+    if ip_address.startswith("192.168"):
+        return {"ip": ip_address, "risk_level": "Safe", "location": "Local Network", "score": 95}
+    elif ip_address == "8.8.8.8":
+        return {"ip": ip_address, "risk_level": "Safe", "location": "US (Google)", "score": 99}
+    elif ip_address == "1.2.3.4":
+        return {"ip": ip_address, "risk_level": "Critical", "location": "Unknown", "score": 10, "threat": "Botnet Activity"}
+    else:
+        return {"ip": ip_address, "risk_level": "Medium", "location": "China", "score": 45, "note": "Suspicious traffic detected"}
+
+@tool
+def search_security_sop(query: str):
+    """
+    查詢內部資安 SOP 文件。
+    當需要知道公司規定、定義等級或處理流程時使用此工具。
+    """
+    docs = retriever.invoke(query)
+    return "\n\n".join([doc.page_content for doc in docs])
+
+tools = [check_ip_reputation, search_security_sop]
+
+# ==========================================
+# 初始化 AI Agent
+# ==========================================
+llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0)
+
+prompt = ChatPromptTemplate.from_messages([
+    ("system", """你是一個專業的資安分析師 (SOC Analyst) Agent。
+    你的任務是協助使用者分析資安威脅。
+    
+    請遵循以下步驟：
+    1. 根據使用者的問題，判斷是否需要查詢 IP 信譽或公司 SOP。
+    2. 若發現高風險威脅，請引用 SOP 中的處理流程給出建議。
+    3. 回答請保持專業、簡潔，並使用 Markdown 格式（可以使用表格整理數據）。
+    """),
+    ("placeholder", "{chat_history}"),
+    ("human", "{input}"),
+    ("placeholder", "{agent_scratchpad}"),
+])
+
+agent = create_tool_calling_agent(llm, tools, prompt)
+agent_executor = AgentExecutor(agent=agent, tools=tools, verbose=True)
+
+# ==========================================
+# Streamlit 聊天介面邏輯
+# ==========================================
+
+# 初始化聊天紀錄
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+
+# 顯示歷史訊息
+for msg in st.session_state.messages:
+    role = "user" if isinstance(msg, HumanMessage) else "assistant"
+    with st.chat_message(role):
+        st.markdown(msg.content)
+
+# 處理使用者輸入
+if user_input := st.chat_input("請輸入指令 (例如: 分析 IP 1.2.3.4 的風險)"):
+    # 1. 顯示使用者訊息
+    st.session_state.messages.append(HumanMessage(content=user_input))
+    with st.chat_message("user"):
+        st.markdown(user_input)
+
+    # 2. Agent 思考與回應
+    with st.chat_message("assistant"):
+        message_placeholder = st.empty()
+        message_placeholder.markdown("🤖 AI 正在分析威脅情報與 SOP...")
+        
+        try:
+            # 呼叫 Agent (記得要把 chat_history 截斷，避免重複)
+            response = agent_executor.invoke({
+                "input": user_input,
+                "chat_history": st.session_state.messages[:-1]
+            })
+            
+            raw_output = response["output"]
+            result_text = ""
+
+            # === 核心修正邏輯開始 ===
+            
+            # 狀況 A: 它真的是一個 List (上次遇到的狀況)
+            if isinstance(raw_output, list):
+                result_text = "".join([item.get('text', '') for item in raw_output if 'text' in item])
+            
+            # 狀況 B: 它是 String，但長得像 List (這次的 Bug)
+            elif isinstance(raw_output, str):
+                # 如果開頭是 '[' 且裡面包含 'type'，我們就嘗試把它變回 List
+                if raw_output.strip().startswith("[") and "'type': 'text'" in raw_output:
+                    try:
+                        # 這一行會把 "字串" 變回 "真正的 List"
+                        parsed_list = ast.literal_eval(raw_output)
+                        result_text = "".join([item.get('text', '') for item in parsed_list if 'text' in item])
+                    except:
+                        # 萬一解析失敗，就直接顯示原始文字
+                        result_text = raw_output
+                else:
+                    # 狀況 C: 它就是普通的文字 (正常狀況)
+                    result_text = raw_output
+            
+            # === 核心修正邏輯結束 ===
+
+            # 顯示結果
+            message_placeholder.markdown(result_text)
+            st.session_state.messages.append(AIMessage(content=result_text))
+            
+        except Exception as e:
+            message_placeholder.error(f"發生錯誤: {str(e)}")
+            print(f"DEBUG Error: {e}")
