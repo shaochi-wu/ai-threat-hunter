@@ -88,7 +88,7 @@ def check_ip_reputation(ip_address: str):
     查詢特定 IP 位址的信譽分數與地理位置。
     當使用者提供 IP 位址並詢問其安全性時使用此工具。
     """
-    # 這裡模擬外部 API 的回傳結果
+    # 模擬外部 API 的回傳結果
     time.sleep(1) # 假裝在連線
     if ip_address.startswith("192.168"):
         return {"ip": ip_address, "risk_level": "Safe", "location": "Local Network", "score": 95}
@@ -159,7 +159,7 @@ if user_input := st.chat_input("請輸入指令 (例如: 分析 IP 1.2.3.4 的�
         message_placeholder.markdown("🤖 AI 正在分析威脅情報與 SOP...")
         
         try:
-            # 呼叫 Agent (記得要把 chat_history 截斷)
+            # 呼叫 Agent (要把 chat_history 截斷)
             response = agent_executor.invoke({
                 "input": user_input,
                 "chat_history": st.session_state.messages[:-1]
@@ -167,15 +167,13 @@ if user_input := st.chat_input("請輸入指令 (例如: 分析 IP 1.2.3.4 的�
             
             raw_output = response["output"]
             
-            # --- 核心解析邏輯修正 (針對混合型別列表) ---
-            
             def parse_gemini_output(content):
                 # 1. 如果是純字串，先嘗試用 AST 把它還原成 List/Dict
                 if isinstance(content, str):
                     # 如果看起來像 List 或 Dict，才去解析
                     if content.strip().startswith("[") or content.strip().startswith("{"):
                         try:
-                            # 這是最關鍵的一步：把 "[{'...'}, '...']" 字串變成真正的 Python List
+                            # 把 "[{'...'}, '...']" 字串變成真正的 Python List
                             content = ast.literal_eval(content)
                         except:
                             pass # 解析失敗就當作普通字串處理
@@ -188,11 +186,11 @@ if user_input := st.chat_input("請輸入指令 (例如: 分析 IP 1.2.3.4 的�
                             # 如果是字典，抓 text 欄位
                             final_text += item.get('text', '')
                         elif isinstance(item, str):
-                            # ⚠️ 修正點：如果是字串，直接接上去！
+                            # 如果是字串，直接接上去
                             final_text += item
                     return final_text
                 
-                # 3. 如果都不是，它就是單純的 String
+                # 3. 如果都不是，就是單純的 String
                 return str(content)
 
             # 執行解析
