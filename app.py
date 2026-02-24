@@ -102,8 +102,8 @@ def check_ip_reputation(ip_address: str):
 @tool
 def search_security_sop(query: str):
     """
-    查詢內部資安 SOP 文件。
-    當需要知道公司規定、定義等級或處理流程時使用此工具。
+    查詢內部資安 SOP 文件
+    當需要知道公司規定、定義等級或處理流程時使用此工具
     """
     docs = retriever.invoke(query)
     return "\n\n".join([doc.page_content for doc in docs])
