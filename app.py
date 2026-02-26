@@ -13,6 +13,10 @@ from langchain_classic.agents import AgentExecutor, create_tool_calling_agent
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.messages import HumanMessage, AIMessage
 
+from langgraph.graph import StateGraph, MessagesState, START, END
+from langgraph.prebuilt import ToolNode, tools_condition
+from langchain_core.messages import SystemMessage
+
 st.set_page_config(page_title="AI Threat Hunter", page_icon="🛡️", layout="wide")
 
 # 側邊欄設定 (API Key 輸入與系統狀態)
@@ -115,22 +119,61 @@ tools = [check_ip_reputation, search_security_sop]
 # ==========================================
 llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0)
 
-prompt = ChatPromptTemplate.from_messages([
-    ("system", """你是一個專業的資安分析師 (SOC Analyst) Agent。
-    你的任務是協助使用者分析資安威脅。
+# prompt = ChatPromptTemplate.from_messages([
+#     ("system", """你是一個專業的資安分析師 (SOC Analyst) Agent。
+#     你的任務是協助使用者分析資安威脅。
     
-    請遵循以下步驟：
-    1. 根據使用者的問題，判斷是否需要查詢 IP 信譽或公司 SOP。
-    2. 若發現高風險威脅，請引用 SOP 中的處理流程給出建議。
-    3. 回答請保持專業、簡潔，並使用 Markdown 格式（可以使用表格整理數據）。
-    """),
-    ("placeholder", "{chat_history}"),
-    ("human", "{input}"),
-    ("placeholder", "{agent_scratchpad}"),
-])
+#     請遵循以下步驟：
+#     1. 根據使用者的問題，判斷是否需要查詢 IP 信譽或公司 SOP。
+#     2. 若發現高風險威脅，請引用 SOP 中的處理流程給出建議。
+#     3. 回答請保持專業、簡潔，並使用 Markdown 格式（可以使用表格整理數據）。
+#     """),
+#     ("placeholder", "{chat_history}"),
+#     ("human", "{input}"),
+#     ("placeholder", "{agent_scratchpad}"),
+# ])
 
-agent = create_tool_calling_agent(llm, tools, prompt)
-agent_executor = AgentExecutor(agent=agent, tools=tools, verbose=True)
+# agent = create_tool_calling_agent(llm, tools, prompt)
+# agent_executor = AgentExecutor(agent=agent, tools=tools, verbose=True)
+
+# 1. 定義 System Prompt (系統提示詞)
+# LangGraph 通常直接把 System Message 放在對話最前面，而不是用 PromptTemplate
+sys_msg = SystemMessage(content="""你是一個專業的資安分析師 (SOC Analyst) Agent。
+你的任務是協助使用者分析資安威脅。
+
+請遵循以下步驟：
+1. 根據使用者的問題，判斷是否需要查詢 IP 信譽或公司 SOP。
+2. 若發現高風險威脅，請引用 SOP 中的處理流程給出建議。
+3. 回答請保持專業、簡潔，並使用 Markdown 格式（可以使用表格整理數據）。
+""")
+
+# 2. 定義節點 (Nodes)
+def agent_node(state: MessagesState):
+    print("--- 進入 Agent 思考節點 ---")  # <--- 加入這行來除錯
+    llm_with_tools = llm.bind_tools(tools)
+    result = llm_with_tools.invoke([sys_msg] + state["messages"])
+    
+    # 如果有呼叫工具，印出來看看
+    if result.tool_calls:
+        print(f"--- Agent 決定呼叫工具: {result.tool_calls} ---")
+        
+    return {"messages": [result]}
+
+# 3. 建立 Graph (流程圖)
+builder = StateGraph(MessagesState)
+
+# 加入節點
+builder.add_node("agent", agent_node)
+builder.add_node("tools", ToolNode(tools)) # LangGraph 內建的工具執行節點
+
+# 定義邊 (Edges) - 決定流程怎麼跑
+builder.add_edge(START, "agent")
+# conditional_edges: 判斷 Agent 是要「繼續使用工具」還是「結束回答」
+builder.add_conditional_edges("agent", tools_condition) 
+builder.add_edge("tools", "agent") # 工具用完後，回傳給 Agent 繼續思考
+
+# 編譯成可執行的 App
+graph = builder.compile()
 
 # ==========================================
 # Streamlit 聊天介面邏輯
@@ -157,15 +200,15 @@ if user_input := st.chat_input("請輸入指令 (例如: 分析 IP 1.2.3.4 的�
     with st.chat_message("assistant"):
         message_placeholder = st.empty()
         message_placeholder.markdown("🤖 AI 正在分析威脅情報與 SOP...")
-        
+            
         try:
             # 呼叫 Agent (要把 chat_history 截斷)
-            response = agent_executor.invoke({
-                "input": user_input,
-                "chat_history": st.session_state.messages[:-1]
-            })
+            # response = agent_executor.invoke({
+            #     "input": user_input,
+            #     "chat_history": st.session_state.messages[:-1]
+            # })
             
-            raw_output = response["output"]
+            # raw_output = response["output"]
             
             def parse_gemini_output(content):
                 # 1. 如果是純字串，先嘗試用 AST 把它還原成 List/Dict
@@ -192,16 +235,43 @@ if user_input := st.chat_input("請輸入指令 (例如: 分析 IP 1.2.3.4 的�
                 
                 # 3. 如果都不是，就是單純的 String
                 return str(content)
-
-            # 執行解析
-            result_text = parse_gemini_output(raw_output)
             
-            # ---------------------------------------
-
-            # 顯示結果
-            message_placeholder.markdown(result_text)
-            st.session_state.messages.append(AIMessage(content=result_text))
+            # LangGraph 的輸入：直接給目前的對話紀錄 (messages)
+            # st.session_state.messages 已經包含了 HumanMessage
+            inputs = {"messages": st.session_state.messages}
             
+            # 使用 stream 來獲取即時回應 (這裡用 invoke 比較簡單示範，但 stream 體驗更好)
+            # 這裡我們取最後一個狀態的訊息
+            result = graph.invoke(inputs)
+            
+            # 從結果中取出最後一條 AI 的回應
+            last_message = result["messages"][-1]
+            raw_content = last_message.content
+            
+            # 使用解析函式清洗輸出的內容 
+            clean_content = parse_gemini_output(raw_content)
+            
+            # 顯示清洗後的結果
+            message_placeholder.markdown(clean_content)
+            
+            # 儲存到 session_state (記得存清洗過的版本，避免下次歷史紀錄讀進來又壞掉)
+            st.session_state.messages.append(AIMessage(content=clean_content))
+
         except Exception as e:
             message_placeholder.error(f"發生錯誤: {str(e)}")
-            print(f"DEBUG Error: {e}")
+            # 建議印出詳細錯誤以便除錯
+            import traceback
+            traceback.print_exc()
+
+            # 執行解析
+        #     result_text = parse_gemini_output(raw_output)
+            
+        #     # ---------------------------------------
+
+        #     # 顯示結果
+        #     message_placeholder.markdown(result_text)
+        #     st.session_state.messages.append(AIMessage(content=result_text))
+            
+        # except Exception as e:
+        #     message_placeholder.error(f"發生錯誤: {str(e)}")
+        #     print(f"DEBUG Error: {e}")
