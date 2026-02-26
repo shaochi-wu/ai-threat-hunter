@@ -2,6 +2,9 @@ import streamlit as st
 import os
 import time
 import ast
+import asyncio
+import nest_asyncio  # <--- 關鍵武器 1
+from contextlib import AsyncExitStack
 
 from dotenv import load_dotenv
 from langchain_google_genai import ChatGoogleGenerativeAI
@@ -17,6 +20,12 @@ from langgraph.graph import StateGraph, MessagesState, START, END
 from langgraph.prebuilt import ToolNode, tools_condition
 from langchain_core.messages import SystemMessage
 
+from mcp import ClientSession, StdioServerParameters
+from mcp.client.stdio import stdio_client
+from mcp.client.sse import sse_client 
+from langchain_core.tools import tool
+
+nest_asyncio.apply()
 st.set_page_config(page_title="AI Threat Hunter", page_icon="🛡️", layout="wide")
 
 # 側邊欄設定 (API Key 輸入與系統狀態)
@@ -83,25 +92,60 @@ def init_rag_system():
 
 retriever = init_rag_system()
 
+# 這是我們用來連接 Server 的通用函式
+async def _call_mcp_tool(tool_name: str, arguments: dict):
+    # 連接到本地的 server.py (預設跑在 8000 port)
+    url = "http://localhost:8000/sse"
+    
+    async with AsyncExitStack() as stack:
+        # 建立 SSE 連線
+        try:
+            client = await stack.enter_async_context(sse_client(url))
+            session = await stack.enter_async_context(ClientSession(client[0], client[1]))
+            await session.initialize()
+            
+            # 呼叫遠端工具
+            result = await session.call_tool(tool_name, arguments)
+            
+            # 回傳結果 (MCP 回傳的是一個 List[TextContent])
+            return result.content[0].text
+        except Exception as e:
+            return f"MCP 連線錯誤 (請確認 server.py 有在執行): {str(e)}"
+
 # ==========================================
 # 定義 Agent 的工具 (Tools)
 # ==========================================
 @tool
-def check_ip_reputation(ip_address: str):
+def check_ip_intelligence(ip_address: str):
     """
-    查詢特定 IP 位址的信譽分數與地理位置。
-    當使用者提供 IP 位址並詢問其安全性時使用此工具。
+    [MCP Tool] 綜合查詢 IP 威脅情資。
+    這會透過 MCP 協定連接到外部 Server，同時查詢「真實地理位置」與「內部黑名單」。
     """
-    # 模擬外部 API 的回傳結果
-    time.sleep(1) # 假裝在連線
-    if ip_address.startswith("192.168"):
-        return {"ip": ip_address, "risk_level": "Safe", "location": "Local Network", "score": 95}
-    elif ip_address == "8.8.8.8":
-        return {"ip": ip_address, "risk_level": "Safe", "location": "US (Google)", "score": 99}
-    elif ip_address == "1.2.3.4":
-        return {"ip": ip_address, "risk_level": "Critical", "location": "Unknown", "score": 10, "threat": "Botnet Activity"}
-    else:
-        return {"ip": ip_address, "risk_level": "Medium", "location": "China", "score": 45, "note": "Suspicious traffic detected"}
+    # 使用 asyncio.run 來執行上面的非同步連線
+    # 因為有了 nest_asyncio.apply()，這裡不會報錯
+    
+    # 1. 查真實地理位置
+    geo_info = asyncio.run(_call_mcp_tool("lookup_ip_geolocation", {"ip": ip_address}))
+    
+    # 2. 查內部資料庫
+    db_info = asyncio.run(_call_mcp_tool("query_internal_db", {"ip": ip_address}))
+    
+    return f"{geo_info}\n\n{db_info}"
+# def check_ip_reputation(ip_address: str):
+#     """
+#     查詢特定 IP 位址的信譽分數與地理位置。
+#     當使用者提供 IP 位址並詢問其安全性時使用此工具。
+#     """
+#     # 模擬外部 API 的回傳結果
+#     time.sleep(1) # 假裝在連線
+#     if ip_address.startswith("192.168"):
+#         return {"ip": ip_address, "risk_level": "Safe", "location": "Local Network", "score": 95}
+#     elif ip_address == "8.8.8.8":
+#         return {"ip": ip_address, "risk_level": "Safe", "location": "US (Google)", "score": 99}
+#     elif ip_address == "1.2.3.4":
+#         return {"ip": ip_address, "risk_level": "Critical", "location": "Unknown", "score": 10, "threat": "Botnet Activity"}
+#     else:
+#         return {"ip": ip_address, "risk_level": "Medium", "location": "China", "score": 45, "note": "Suspicious traffic detected"}
 
 @tool
 def search_security_sop(query: str):
@@ -112,7 +156,7 @@ def search_security_sop(query: str):
     docs = retriever.invoke(query)
     return "\n\n".join([doc.page_content for doc in docs])
 
-tools = [check_ip_reputation, search_security_sop]
+tools = [check_ip_intelligence, search_security_sop]
 
 # ==========================================
 # 初始化 AI Agent
