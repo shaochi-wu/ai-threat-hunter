@@ -12,3 +12,10 @@ __pycache__/
 venv/
 .venv/
 env/
+
+# 忽略資料庫
+*.db
+threat_intel.db
+
+# 忽略向量索引
+faiss_index/
