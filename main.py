@@ -74,11 +74,29 @@ async def search_security_sop(query: str):
     docs = retriever.invoke(query)
     return "\n\n".join([doc.page_content for doc in docs])
 
-# 新增封鎖 IP 的工具 (串接 server.py 的新功能)
 @tool
-async def block_ip_tool(ip: str, reason: str):
-    """[敏感工具] 將惡意 IP 加入防火牆黑名單。必須附上封鎖原因 (reason)。"""
-    return await _call_mcp_tool("block_malicious_ip", {"ip": ip, "reason": reason})
+async def block_ip_tool(
+    ip: str, 
+    reason: str,
+    country: str = "未提供",
+    city: str = "未提供",
+    isp: str = "未提供",
+    org: str = "未提供"
+):
+    """[敏感工具] 將惡意 IP 加入防火牆黑名單。
+    必須附上封鎖原因 (reason)。
+    強烈建議將從 check_ip_intelligence 查到的 country, city, isp, org 資訊一併傳入。"""
+    
+    # 將所有收到的參數完整打包，傳給 MCP Server
+    payload = {
+        "ip": ip, 
+        "reason": reason,
+        "country": country,
+        "city": city,
+        "isp": isp,
+        "org": org
+    }
+    return await _call_mcp_tool("block_ip_tool", payload)
 
 # ==========================================
 # 2. LangGraph 拓撲重構 (區分安全與敏感節點)
@@ -249,17 +267,33 @@ DB_FILE = "threat_intel.db"
 
 @app.get("/api/blacklist")
 async def get_blacklist():
-    """獲取目前黑名單列表"""
+    """獲取目前黑名單列表 (包含 Geo-IP 資訊)"""
     try:
         conn = sqlite3.connect(DB_FILE)
         cursor = conn.cursor()
-        # 依時間遞減排序，最新的在最上面
-        cursor.execute("SELECT ip_address, reason, timestamp FROM blocked_ips ORDER BY timestamp DESC")
+        # 撈取 country, city, isp, org 欄位
+        cursor.execute("""
+            SELECT ip_address, reason, timestamp, country, city, isp, org 
+            FROM blocked_ips 
+            ORDER BY timestamp DESC
+        """)
         rows = cursor.fetchall()
         conn.close()
         
-        return [{"ip": r[0], "reason": r[1], "timestamp": r[2]} for r in rows]
+        # 依照 SQL 撈出來的順序對應到 JSON 欄位
+        return [
+            {
+                "ip": r[0], 
+                "reason": r[1], 
+                "timestamp": r[2],
+                "country": r[3],
+                "city": r[4],
+                "isp": r[5],
+                "org": r[6]
+            } for r in rows
+        ]
     except Exception as e:
+        print(f"撈取黑名單錯誤: {e}")
         return []
 
 @app.delete("/api/blacklist/{ip}")

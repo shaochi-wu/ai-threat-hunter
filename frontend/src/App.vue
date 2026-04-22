@@ -114,6 +114,19 @@ const submitApproval = async (approved) => {
   } finally {
     isLoading.value = false
   }
+
+  try {
+    const response = await fetch(`http://localhost:8080/api/approval/${pendingApproval.value.id}`, {
+      method: 'POST',
+      body: JSON.stringify({ approved })
+    });
+    
+    // 提交成功後，將審批面板關閉
+    pendingApproval.value = null;
+    
+  } catch (error) {
+    console.error("審批提交失敗", error);
+  }
 }
 
 // --- 黑名單狀態管理 ---
@@ -143,6 +156,14 @@ const unblockIp = async (ip) => {
     console.error("解鎖失敗:", error)
   }
 }
+
+watch(isLoading, (newValue, oldValue) => {
+  // 當 Agent 從「處理中 (true)」變成「處理完畢 (false)」的那一瞬間
+  if (oldValue === true && newValue === false) {
+    console.log("Agent 處理完畢，同步最新黑名單...");
+    fetchBlacklist();
+  }
+});
 
 // 網頁載入時自動抓取一次黑名單
 onMounted(() => {
@@ -266,7 +287,8 @@ onMounted(() => {
 
         <div v-for="item in blacklist" :key="item.ip" 
              class="bg-slate-900/50 border border-slate-700 rounded-lg p-3 shadow-sm hover:border-slate-500 transition-colors group">
-          <div class="flex justify-between items-start mb-2">
+          
+          <div class="flex justify-between items-start mb-1">
             <div class="font-mono font-bold text-red-400 text-sm">{{ item.ip }}</div>
             <button @click="unblockIp(item.ip)" 
                     class="text-slate-500 hover:text-emerald-400 opacity-0 group-hover:opacity-100 transition-all"
@@ -276,11 +298,28 @@ onMounted(() => {
               </svg>
             </button>
           </div>
-          <div class="text-xs text-slate-400 mb-1 line-clamp-2" :title="item.reason">
+          
+          <div class="text-xs text-slate-300 mb-2 line-clamp-2" :title="item.reason">
             原因: {{ item.reason }}
           </div>
-          <div class="text-[10px] text-slate-500 font-mono">
-            {{ item.timestamp }}
+
+          <div class="bg-slate-800/80 rounded p-2 mb-2 space-y-1.5 border border-slate-700/50">
+            <div class="flex items-center gap-2 text-[11px] text-slate-400">
+              <span title="國家/城市"></span>
+              <span class="truncate">{{ item.country || '未知國家' }} / {{ item.city || '未知城市' }}</span>
+            </div>
+            <div class="flex items-center gap-2 text-[11px] text-slate-400">
+              <span title="ISP 服務商"></span>
+              <span class="truncate">{{ item.isp || '未知 ISP' }}</span>
+            </div>
+            <div class="flex items-center gap-2 text-[11px] text-slate-400">
+              <span title="所屬組織/網域"></span>
+              <span class="truncate">{{ item.org || '未知組織' }}</span>
+            </div>
+          </div>
+
+          <div class="text-[10px] text-slate-500 font-mono flex items-center gap-1">
+            <span></span> {{ item.timestamp }}
           </div>
         </div>
 
