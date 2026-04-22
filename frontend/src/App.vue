@@ -115,11 +115,46 @@ const submitApproval = async (approved) => {
     isLoading.value = false
   }
 }
+
+// --- 黑名單狀態管理 ---
+const blacklist = ref([])
+
+// 取得黑名單
+const fetchBlacklist = async () => {
+  try {
+    const res = await fetch('http://localhost:8080/api/blacklist')
+    blacklist.value = await res.json()
+  } catch (error) {
+    console.error("無法獲取黑名單:", error)
+  }
+}
+
+// 解除封鎖 IP
+const unblockIp = async (ip) => {
+  if(!confirm(`確定要解除封鎖 ${ip} 嗎？`)) return;
+  
+  try {
+    await fetch(`http://localhost:8080/api/blacklist/${ip}`, {
+      method: 'DELETE'
+    })
+    // 刪除成功後，重新拉取最新名單來更新畫面
+    fetchBlacklist()
+  } catch (error) {
+    console.error("解鎖失敗:", error)
+  }
+}
+
+// 網頁載入時自動抓取一次黑名單
+onMounted(() => {
+  fetchBlacklist()
+})
+
 </script>
 
 <template>
-  <div class="min-h-screen bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950 text-gray-100 flex flex-col items-center py-8 px-4 font-sans tracking-wide">
-    <div class="w-full max-w-4xl bg-slate-800/50 backdrop-blur-md rounded-2xl shadow-2xl border border-slate-700/50 overflow-hidden flex flex-col h-[85vh]">
+  <div class="min-h-screen bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950 text-gray-100 flex justify-center py-8 px-4 font-sans tracking-wide gap-6">
+    
+    <div class="w-full max-w-4xl bg-slate-800/50 backdrop-blur-md rounded-2xl shadow-2xl border border-slate-700/50 overflow-hidden flex flex-col h-[85vh] relative">
       
       <div class="bg-slate-900/80 px-6 py-4 flex items-center justify-between border-b border-slate-700/50">
         <div class="flex items-center gap-3">
@@ -168,8 +203,10 @@ const submitApproval = async (approved) => {
             </span>
           </div>
         </div>
+        
+        <div :class="pendingApproval ? 'h-40' : 'h-4'" class="w-full shrink-0 transition-all duration-300"></div>
       </div>
-
+      
       <div v-if="pendingApproval" class="absolute bottom-[90px] left-0 right-0 px-6 z-10 animate-fade-in-up">
         <div class="bg-slate-800 border-2 border-red-500/50 shadow-2xl shadow-red-900/20 rounded-xl p-4 flex flex-col gap-3">
           <div class="flex items-center gap-2 text-red-400">
@@ -209,7 +246,46 @@ const submitApproval = async (approved) => {
         </div>
       </div>
     </div>
-  </div>
+
+    <div class="w-80 bg-slate-800/50 backdrop-blur-md rounded-2xl shadow-2xl border border-slate-700/50 flex flex-col p-4 h-[85vh] hidden lg:flex">
+      
+      <div class="flex items-center justify-between mb-4 pb-4 border-b border-slate-700">
+        <h2 class="font-bold text-lg text-slate-100 flex items-center gap-2">
+          <span></span> 防火牆黑名單
+        </h2>
+        <span class="bg-red-500/20 text-red-400 text-xs px-2 py-1 rounded-full font-bold">
+          {{ blacklist.length }} 個 IP
+        </span>
+      </div>
+
+      <div class="flex-1 overflow-y-auto space-y-3 pr-2 custom-scrollbar">
+        
+        <div v-if="blacklist.length === 0" class="text-center text-slate-500 text-sm py-10">
+          目前無封鎖紀錄
+        </div>
+
+        <div v-for="item in blacklist" :key="item.ip" 
+             class="bg-slate-900/50 border border-slate-700 rounded-lg p-3 shadow-sm hover:border-slate-500 transition-colors group">
+          <div class="flex justify-between items-start mb-2">
+            <div class="font-mono font-bold text-red-400 text-sm">{{ item.ip }}</div>
+            <button @click="unblockIp(item.ip)" 
+                    class="text-slate-500 hover:text-emerald-400 opacity-0 group-hover:opacity-100 transition-all"
+                    title="解除封鎖">
+              <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clip-rule="evenodd" />
+              </svg>
+            </button>
+          </div>
+          <div class="text-xs text-slate-400 mb-1 line-clamp-2" :title="item.reason">
+            原因: {{ item.reason }}
+          </div>
+          <div class="text-[10px] text-slate-500 font-mono">
+            {{ item.timestamp }}
+          </div>
+        </div>
+
+      </div>
+    </div> </div>
 </template>
 
 <style>

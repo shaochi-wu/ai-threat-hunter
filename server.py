@@ -65,16 +65,10 @@ async def lookup_ip_geolocation(ip: str) -> str:
 @mcp.tool()
 def query_internal_reputation_db(ip: str) -> str:
     """
-    查詢公司內部的威脅情資資料庫 (SQLite DB)
-    這包含公司歷史紀錄中的黑名單 IP 與攻擊紀錄
+    查詢公司內部的威脅情資資料庫 (SQLite DB)。
+    這包含公司歷史紀錄中的黑名單 IP 與攻擊紀錄。
     """
-    # 內部網段防呆機制
-    if ip.startswith("192.168") or ip.startswith("10."):
-        return "【內部資料庫】此為內部 IP，信譽良好 (Safe)。"
-    elif ip == "8.8.8.8":
-        return "【內部資料庫】Google DNS，白名單信任節點。"
-
-    # 改為查詢真實的 SQLite 資料庫
+    # 優先查詢真實資料庫 (黑名單擁有最高優先級)
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
     cursor.execute("SELECT reason, timestamp FROM blocked_ips WHERE ip_address = ?", (ip,))
@@ -83,9 +77,15 @@ def query_internal_reputation_db(ip: str) -> str:
 
     if result:
         reason, timestamp = result
-        return f"【內部資料庫】⚠️ 警示！此 IP 在黑名單中。\n封鎖時間: {timestamp}\n封鎖原因: {reason}\n風險等級: Critical。"
-    else:
-        return "【內部資料庫】無此 IP 的內部歷史紀錄 (未被封鎖)。"
+        return f"【內部資料庫】⚠️ 警示！此 IP 已存在於防火牆黑名單中 (目前狀態：已封鎖阻斷)。\n封鎖時間: {timestamp}\n封鎖原因: {reason}\n[系統提示] 此 IP 已處於封鎖狀態，請向使用者回報此資訊，絕對不要重複呼叫 block_ip_tool。"
+
+    # 如果資料庫沒查到黑名單紀錄，才套用「預設白名單」規則
+    if ip.startswith("192.168") or ip.startswith("10."):
+        return "【內部資料庫】此為內部 IP，信譽良好 (Safe)。"
+    elif ip == "8.8.8.8":
+        return "【內部資料庫】Google DNS，白名單信任節點。"
+        
+    return "【內部資料庫】無此 IP 的內部歷史紀錄 (未被封鎖)。"
 
 # ==========================================
 # 工具 3: 將惡意 IP 寫入防火牆黑名單 

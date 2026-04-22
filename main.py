@@ -1,6 +1,7 @@
 import os
 import ast
 import asyncio
+import sqlite3
 from contextlib import AsyncExitStack
 from dotenv import load_dotenv
 
@@ -10,6 +11,8 @@ from pydantic import BaseModel
 import uvicorn
 
 from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_ollama import ChatOllama
+from langchain_groq import ChatGroq
 from langchain_text_splitters import CharacterTextSplitter
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
@@ -85,16 +88,38 @@ safe_tools = [check_ip_intelligence, search_security_sop]
 sensitive_tools = [block_ip_tool]
 all_tools = safe_tools + sensitive_tools
 
-llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0)
-sys_msg = SystemMessage(content="""你是一個專業的資安分析師 (SOC Analyst) Agent。
-你的任務是協助使用者分析資安威脅。
-若你判斷某個 IP 是惡意攻擊且符合 SOP 封鎖條件，請呼叫 block_ip_tool 進行封鎖。
-回答請保持專業、簡潔，並使用 Markdown 格式。
-""")
+# llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0)
+# llm = ChatOllama(model="qwen3.5:2b", temperature=0)
+llm = ChatGroq(model="llama-3.3-70b-versatile", temperature=0)
+
+# 動態載入外部 System Prompt
+prompt_path = os.path.join(os.path.dirname(__file__), "prompts", "system_prompt.md")
+try:
+    with open(prompt_path, "r", encoding="utf-8") as f:
+        system_prompt_content = f.read()
+except FileNotFoundError:
+    print(f"❌ 找不到 System Prompt 檔案: {prompt_path}")
+
+sys_msg = SystemMessage(content=system_prompt_content)
 
 async def agent_node(state: MessagesState):
+    print("\n" + "="*45)
+    print("🧠 --- 進入 Agent 思考節點 ---")
+    
     llm_with_tools = llm.bind_tools(all_tools)
     result = await llm_with_tools.ainvoke([sys_msg] + state["messages"])
+    
+    # 判斷 Agent 決定做什麼，並印出漂亮的 Log
+    if result.tool_calls:
+        print("🛠️ --- Agent 決定呼叫工具 ---")
+        for tc in result.tool_calls:
+            print(f"   🔧 工具名稱: {tc['name']}")
+            print(f"   📦 傳入參數: {tc['args']}")
+    else:
+        print("💬 --- Agent 決定直接回覆 (不呼叫工具) ---")
+        
+    print("="*45 + "\n")
+    
     return {"messages": [result]}
 
 # 建立自定義的工具路由函數
@@ -216,6 +241,40 @@ async def approve_endpoint(request: ApproveRequest):
         import traceback
         traceback.print_exc()
         return {"status": "error", "message": str(e)}
+
+# ==========================================
+# 4. 前端 API (獨立於 Agent 之外)
+# ==========================================
+DB_FILE = "threat_intel.db"
+
+@app.get("/api/blacklist")
+async def get_blacklist():
+    """獲取目前黑名單列表"""
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        # 依時間遞減排序，最新的在最上面
+        cursor.execute("SELECT ip_address, reason, timestamp FROM blocked_ips ORDER BY timestamp DESC")
+        rows = cursor.fetchall()
+        conn.close()
+        
+        return [{"ip": r[0], "reason": r[1], "timestamp": r[2]} for r in rows]
+    except Exception as e:
+        return []
+
+@app.delete("/api/blacklist/{ip}")
+async def remove_from_blacklist(ip: str):
+    """手動解鎖 (刪除) 指定 IP"""
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM blocked_ips WHERE ip_address = ?", (ip,))
+    conn.commit()
+    changes = conn.total_changes
+    conn.close()
+    
+    if changes > 0:
+        return {"status": "success", "message": f"{ip} 已解除封鎖"}
+    return {"status": "error", "message": "找不到該 IP"}
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8080)
