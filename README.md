@@ -22,4 +22,4 @@
 ---
 
 ## 系統架構圖 (Architecture)
-![AI Threat Hunter 系統架構圖](images/ai_threat_hunter_architecture.png)
+![AI Threat Hunter 系統架構圖](images/system_architecture.png)
