@@ -23,18 +23,26 @@
 
 ## 系統架構圖 (Architecture)
 
-```text
-[ 用戶端 (Vue 3) ] <== REST API / SSE ==> [ 後端大腦 (FastAPI + LangGraph) ]
-                                                │
-                                    ┌───────────┴───────────┐
-                                    │                       │
-                            [ Agent State ]          [ MCP Client ]
-                                    │                       │
-            ┌───────────────────────┼──────────┐            │ (Tool Calling)
-            ▼                       ▼          ▼            ▼
-      Supervisor <─────> Researcher      Responder    [ FastMCP Server ]
-      (路由與統整)        (情資與檢索)      (防禦執行)         │
-                            │                        ├─ Geo-IP API
-                            ▼                        ├─ SQLite DB (風險庫/黑名單)
-                  [ Hybrid RAG 引擎 ]
-                 (FAISS + BM25 雙檢索)
+graph TD
+    classDef core fill:#1e293b,stroke:#3b82f6,stroke-width:2px,color:#fff;
+    classDef tool fill:#0f172a,stroke:#10b981,stroke-width:2px,color:#fff;
+    classDef reflect fill:#7c2d12,stroke:#f97316,stroke-width:2px,color:#fff;
+    classDef default fill:#334155,stroke:#64748b,color:#fff;
+
+    START((START)) --> Supervisor:::core
+
+    Supervisor -->|Decision: Researcher| Researcher:::core
+    Supervisor -->|Decision: Responder| Responder:::core
+    Supervisor -->|Decision: FINISH| END((END))
+
+    Researcher -->|呼叫情報/SOP工具| safe_tools[[Safe Tools]]:::tool
+    Researcher -->|純文字回覆| Supervisor
+    safe_tools -->|回傳資料| Supervisor
+
+    Responder -->|提報封鎖| reflect{Reflection<br>稽核節點}:::reflect
+    Responder -->|純文字回覆| Supervisor
+
+    reflect -->|分數不足攔截| Supervisor
+    reflect -->|通過審批 (HITL)| sensitive_tools[[Sensitive Tools]]:::tool
+    
+    sensitive_tools -->|回傳封鎖結果| Supervisor
