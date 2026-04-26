@@ -1,142 +1,209 @@
-from mcp.server.fastmcp import FastMCP
-import httpx
-import sqlite3
 import os
+import re
+import sqlite3
+import httpx
 from datetime import datetime
+from mcp.server.fastmcp import FastMCP
 
-# 初始化 MCP Server
+# ==========================================
+# 1. 系統設定與常數 (Configuration & Constants)
+# ==========================================
 mcp = FastMCP("ThreatIntelServer")
-
-# 定義 SQLite 資料庫檔案名稱
 DB_FILE = "threat_intel.db"
 
+# 高風險特徵字典 (用於動態加權)
+HIGH_RISK_COUNTRIES = ["Russia", "North Korea", "Iran", "China"]
+HIGH_RISK_ISPS = ["DigitalOcean", "Linode", "OVH", "Choopa", "ColoCrossing"]
+TRUSTED_ORGS = ["Google LLC", "Microsoft Corporation", "Amazon.com", "Cloudflare, Inc."]
+
+# ==========================================
+# 2. 資料庫初始化 (Database Initialization)
+# ==========================================
 def init_db():
-    """初始化 SQLite 資料庫，建立黑名單資料表"""
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
-    # 建立一個儲存惡意 IP 的資料表，新增地理情資欄位
+
+    # 建立黑名單 (blocked_ips)
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS blocked_ips (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            ip_address TEXT UNIQUE NOT NULL,
-            reason TEXT NOT NULL,
-            country TEXT,
-            city TEXT,
-            isp TEXT,
-            org TEXT,
-            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+            id INTEGER PRIMARY KEY AUTOINCREMENT, 
+            ip_address TEXT UNIQUE NOT NULL, 
+            reason TEXT NOT NULL, 
+            country TEXT, 
+            city TEXT, 
+            isp TEXT, 
+            org TEXT, 
+            timestamp DATETIME DEFAULT (datetime('now', 'localtime'))
         )
     ''')
-    
-    # 如果資料表已存在但沒新欄位，手動補上
-    columns = [row[1] for row in cursor.execute("PRAGMA table_info(blocked_ips)")]
-    new_cols = ["country", "city", "isp", "org"]
-    for col in new_cols:
-        if col not in columns:
-            cursor.execute(f"ALTER TABLE blocked_ips ADD COLUMN {col} TEXT")
 
-    # 預先塞入一筆帶有詳細資訊的假資料，方便測試
+    # 建立觀察名單 (observed_ips) - 包含風險評分機制
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS observed_ips (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, 
+            ip_address TEXT UNIQUE NOT NULL, 
+            risk_score INTEGER DEFAULT 0, 
+            hit_count INTEGER DEFAULT 0, 
+            last_reason TEXT, 
+            country TEXT, 
+            city TEXT, 
+            org TEXT, 
+            last_seen DATETIME DEFAULT (datetime('now', 'localtime'))
+        )
+    ''')
+
+    # ==========================
+    # 預設資料寫入
+    # ==========================
+    # 觀察名單預設資料
+    mock_observations = [
+        ('2.19.205.255', 75, 1, '多次 SSH 登入失敗', 'Russia', 'Moscow', 'Akamai Technologies'),
+        ('2.19.205.180', 65, 1, '多次 SSH 登入失敗', 'Russia', 'Moscow', 'Akamai Technologies'),
+        ('8.8.8.8', 20, 1, '初次查詢紀錄', 'United States', 'Ashburn', 'Google LLC')
+    ]
+    
+    for ip, score, hits, reason, country, city, org in mock_observations:
+        cursor.execute("""
+            INSERT OR IGNORE INTO observed_ips (ip_address, risk_score, hit_count, last_reason, country, city, org) 
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (ip, score, hits, reason, country, city, org))
+
+    # 黑名單預設資料
     cursor.execute("""
         INSERT OR IGNORE INTO blocked_ips (ip_address, reason, country, city, isp, org) 
         VALUES ('1.2.3.4', '歷史 Botnet 攻擊紀錄', 'United States', 'San Jose', 'Cloudflare', 'Cloudflare, Inc.')
     """)
+
     conn.commit()
     conn.close()
-    print("✅ 內部情資資料庫 (SQLite) 與欄位初始化完成！")
 
-# 伺服器啟動時自動建立資料庫
+# 啟動時立即執行初始化
 init_db()
 
 # ==========================================
-# 工具 1: 真實的 IP 地理位置查詢 (保持不變)
+# 3. 核心工具 (MCP Tools)
 # ==========================================
+
 @mcp.tool()
 async def lookup_ip_geolocation(ip: str) -> str:
-    """
-    使用外部真實 API 查詢 IP 位址的地理位置、ISP 與組織名稱
-    用於分析 IP 是否來自高風險國家或已知的雲端服務商
-    """
-    url = f"http://ip-api.com/json/{ip}?fields=status,message,country,city,isp,org,as,query"
+    """查詢指定 IP 的地理位置與 ISP 資訊"""
+    url = f"http://ip-api.com/json/{ip}?fields=status,message,country,city,isp,org,query"
     async with httpx.AsyncClient() as client:
         try:
             response = await client.get(url, timeout=5.0)
             data = response.json()
-            if data['status'] == 'fail':
+            if data.get('status') == 'fail': 
                 return f"查詢失敗: {data.get('message', '未知錯誤')}"
-            
-            return f"""
-            【真實 IP 情報】
-            - IP: {data['query']}
-            - 國家: {data['country']}
-            - 城市: {data['city']}
-            - ISP: {data['isp']}
-            - 組織: {data['org']}
-            """
+            return f"國家: {data.get('country', '未知')}, 城市: {data.get('city', '未知')}, ISP: {data.get('isp', '未知')}, 組織: {data.get('org', '未知')}"
         except Exception as e:
             return f"連線錯誤: {str(e)}"
 
-# ==========================================
-# 工具 2: 查詢內部 SQLite 信譽資料庫 (升級版)
-# ==========================================
 @mcp.tool()
-def query_internal_reputation_db(ip: str) -> str:
+def analyze_and_update_reputation(ip: str, geo_country: str = "", geo_isp: str = "", geo_org: str = "") -> str:
     """
-    查詢公司內部的威脅情資資料庫 (SQLite DB)。
-    這包含公司歷史紀錄中的黑名單 IP、地理資訊與封鎖原因。
+    [核心工具] 查詢內部資料庫並根據外部傳入的 Geo-IP 情報進行「動態風險評分計算」
     """
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
-    # 增加讀取地理資訊欄位
-    cursor.execute("SELECT reason, timestamp, country, city, isp, org FROM blocked_ips WHERE ip_address = ?", (ip,))
-    result = cursor.fetchone()
-    conn.close()
+    
+    # 1. 檢查是否已在黑名單
+    cursor.execute("SELECT reason, timestamp FROM blocked_ips WHERE ip_address = ?", (ip,))
+    blocked = cursor.fetchone()
+    if blocked:
+        conn.close()
+        return f"【狀態：已封鎖 🚫】此 IP 已在黑名單中。原因：{blocked[0]}，時間：{blocked[1]}"
 
-    if result:
-        reason, timestamp, country, city, isp, org = result
-        return f"""【內部資料庫】⚠️ 警示！此 IP 已存在於防火牆黑名單中。
-- 目前狀態：已封鎖阻斷
-- 封鎖時間：{timestamp}
-- 封鎖原因：{reason}
-- 來源情報：{country} / {city} ({org})
-[系統提示] 此 IP 已處於封鎖狀態，絕對不要重複呼叫 block_ip_tool。"""
+    # 2. 取得觀察名單紀錄
+    cursor.execute("SELECT risk_score, hit_count, last_reason FROM observed_ips WHERE ip_address = ?", (ip,))
+    observed = cursor.fetchone()
+    
+    # 初始化計分變數
+    base_score = observed[0] if observed else 20
+    hits = observed[1] if observed else 0
+    reason = observed[2] if observed else "新發現的可疑 IP"
+    
+    score_adjustment = 0
+    adjustment_reasons = []
 
-    # 預設白名單規則
-    if ip.startswith("192.168") or ip.startswith("10."):
-        return "【內部資料庫】此為內部 IP，信譽良好 (Safe)。"
-    elif ip == "8.8.8.8":
-        return "【內部資料庫】Google DNS，白名單信任節點。"
+    # 動態加權邏輯
+    if any(country in geo_country for country in HIGH_RISK_COUNTRIES):
+        score_adjustment += 30
+        adjustment_reasons.append("來自高風險國家 (+30)")
+    if any(isp in geo_isp for isp in HIGH_RISK_ISPS):
+        score_adjustment += 20
+        adjustment_reasons.append("使用常見跳板 ISP (+20)")
+    if any(org in geo_org for org in TRUSTED_ORGS):
+        score_adjustment -= 40
+        adjustment_reasons.append("知名可信組織 (-40)")
+
+    final_score = max(0, min(100, base_score + score_adjustment))
+    new_hits = hits + 1
+    
+    # ==========================================
+    # 從傳入的字串解析地理資訊 (防呆設計)
+    # ==========================================
+    parsed_country = "未知"
+    parsed_city = "未知"
+    parsed_org = "未知"
+    
+    if geo_country:
+        c_match = re.search(r"國家:\s*([^,]+)", geo_country)
+        if c_match: parsed_country = c_match.group(1).strip()
         
-    return "【內部資料庫】無此 IP 的內部歷史紀錄 (未被封鎖)。"
+        ci_match = re.search(r"城市:\s*([^,]+)", geo_country)
+        if ci_match: parsed_city = ci_match.group(1).strip()
+        
+        o_match = re.search(r"組織:\s*([^,]+)", geo_country)
+        if o_match: parsed_org = o_match.group(1).strip()
 
-# ==========================================
-# 工具 3: 將惡意 IP 寫入防火牆黑名單 (更名與功能升級)
-# ==========================================
+    # 寫入或更新資料庫
+    if observed:
+        cursor.execute("""
+            UPDATE observed_ips 
+            SET risk_score = ?, hit_count = ?, last_seen = datetime('now', 'localtime'),
+                country = ?, city = ?, org = ?
+            WHERE ip_address = ?
+        """, (final_score, new_hits, parsed_country, parsed_city, parsed_org, ip))
+    else:
+        cursor.execute("""
+            INSERT INTO observed_ips (ip_address, risk_score, hit_count, last_reason, country, city, org, last_seen) 
+            VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now', 'localtime'))
+        """, (ip, final_score, new_hits, reason, parsed_country, parsed_city, parsed_org))
+    
+    conn.commit()
+    conn.close()
+    
+    # 產生分析報告回傳給 Agent
+    status = "CRITICAL" if final_score >= 80 else "WARNING"
+    report = f"【狀態：重點觀察 ⚠️】風險等級：{status}\n"
+    report += f"- 最終評分：{final_score} (歷史基礎分: {base_score}, 本次調整: {score_adjustment})\n"
+    if adjustment_reasons:
+        report += f"- 調整原因：{', '.join(adjustment_reasons)}\n"
+    report += f"- 累積偵測：{new_hits} 次"
+    
+    return report
+
 @mcp.tool()
-def block_ip_tool(
-    ip: str, 
-    reason: str, 
-    country: str = "未提供", 
-    city: str = "未提供", 
-    isp: str = "未提供", 
-    org: str = "未提供"
-) -> str:
-    """
-    [企業防火牆 API] 將惡意 IP 加入黑名單資料庫，阻斷其連線。
-    呼叫此工具前，請先透過 lookup_ip_geolocation 取得地理資訊。
-    """
+def block_ip_tool(ip: str, reason: str, country: str = "未知", city: str = "未知", org: str = "未知") -> str:
+    """[企業防火牆 API] 將 IP 移入黑名單"""
     try:
         conn = sqlite3.connect(DB_FILE)
         cursor = conn.cursor()
-        current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        # 寫入包含地理資訊的完整資料
+        
+        # 寫入黑名單
         cursor.execute("""
-            INSERT INTO blocked_ips (ip_address, reason, country, city, isp, org, timestamp) 
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        """, (ip, reason, country, city, isp, org, current_time))
+            INSERT INTO blocked_ips (ip_address, reason, country, city, org) 
+            VALUES (?, ?, ?, ?, ?)
+        """, (ip, reason, country, city, org))
+        
+        # 執行成功後 移出觀察名單
+        cursor.execute("DELETE FROM observed_ips WHERE ip_address = ?", (ip,))
+        
         conn.commit()
         conn.close()
-        return f"✅ 成功將 IP {ip} 加入防火牆黑名單。來源：{country} ({org})"
+        return f"✅ 成功將 IP {ip} 永久封鎖並移出觀察名單。"
+        
     except sqlite3.IntegrityError:
-        return f"⚠️ IP {ip} 已經在黑名單中了，無需重複加入。"
+        return f"⚠️ IP {ip} 已經在黑名單中了。"
     except Exception as e:
-        return f"❌ 寫入資料庫失敗: {str(e)}"
+        return f"❌ 執行失敗: {str(e)}"
