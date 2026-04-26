@@ -31,19 +31,19 @@ graph TD
 
     START((START)) --> Supervisor:::core
 
-    Supervisor -->|Decision: Researcher| Researcher:::core
-    Supervisor -->|Decision: Responder| Responder:::core
-    Supervisor -->|Decision: FINISH| END((END))
+    Supervisor -->|"Decision: Researcher"| Researcher:::core
+    Supervisor -->|"Decision: Responder"| Responder:::core
+    Supervisor -->|"Decision: FINISH"| END_NODE((END))
 
-    Researcher -->|呼叫情報/SOP工具| safe_tools[[Safe Tools]]:::tool
-    Researcher -->|純文字回覆| Supervisor
-    safe_tools -->|回傳資料| Supervisor
+    Researcher -->|"呼叫情報/SOP工具"| safe_tools[[Safe Tools]]:::tool
+    Researcher -->|"純文字回覆"| Supervisor
+    safe_tools -->|"回傳資料"| Supervisor
 
-    Responder -->|提報封鎖| reflect{Reflection<br>稽核節點}:::reflect
-    Responder -->|純文字回覆| Supervisor
+    Responder -->|"提報封鎖"| reflect{Reflection<br>稽核節點}:::reflect
+    Responder -->|"純文字回覆"| Supervisor
 
-    reflect -->|分數不足攔截| Supervisor
-    reflect -->|通過審批 (HITL)| sensitive_tools[[Sensitive Tools]]:::tool
+    reflect -->|"分數不足攔截"| Supervisor
+    reflect -->|"通過審批 (HITL)"| sensitive_tools[[Sensitive Tools]]:::tool
     
-    sensitive_tools -->|回傳封鎖結果| Supervisor
+    sensitive_tools -->|"回傳封鎖結果"| Supervisor
 ```
