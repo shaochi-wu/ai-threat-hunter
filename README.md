@@ -23,46 +23,69 @@
 
 ## 系統架構圖 (Architecture)
 ```mermaid
+%%{init: {'theme': 'default'}}%%
 graph TD
-    %% 定義樣式 (加入 rx, ry 增加現代感圓角)
-    classDef core fill:#1e293b,stroke:#3b82f6,stroke-width:2px,color:#fff,rx:8,ry:8;
-    classDef tool fill:#0f172a,stroke:#10b981,stroke-width:2px,color:#fff,rx:8,ry:8;
-    classDef reflect fill:#7c2d12,stroke:#f97316,stroke-width:2px,color:#fff,rx:8,ry:8;
-    classDef default fill:#334155,stroke:#64748b,color:#fff;
+    %% --- 定義通用樣式 (現代圓角、扁平化) ---
+    classDef common fill:transparent,stroke:#e2e8f0,stroke-width:1px,color:#334155,font-size:14px,rx:12,ry:12;
+    classDef core fill:transparent,stroke:#e2e8f0,stroke-width:1px,color:#334155,font-size:14px,rx:12,ry:12;
+    classDef tool fill:transparent,stroke:#e2e8f0,stroke-width:1px,color:#334155,font-size:14px,rx:12,ry:12;
+    classDef reflect fill:#fffbeb,stroke:#e2e8f0,stroke-width:1px,color:#334155,font-size:14px,rx:12,ry:12;
+    classDef default fill:transparent,stroke:#e2e8f0,stroke-width:1px,color:#334155,font-size:14px,rx:12,ry:12;
 
-    START((START))
+    %% 定義圓形節點樣式 (START, END)
+    classDef round fill:#3b82f6,color:#fff,stroke-width:0px,rx:50%,ry:50%;
 
-    %% 使用 Subgraph 將不同架構層級區分開來
-    subgraph Agent_Layer ["🤖 Agent 協作層 (LangGraph)"]
-        Supervisor{{"Supervisor"}}:::core
-        Researcher{{"Researcher"}}:::core
-        Responder{{"Responder"}}:::core
+    %% --- 定義連接線樣式 (消除箭頭，淡灰色實線) ---
+    linkStyle default stroke:#cbd5e1,stroke-width:1.5px,fill:none;
+    %% 將向上數據流設置為虛線
+    linkStyle 5,6,9,10,11 stroke:#cbd5e1,stroke-width:1.5px,fill:none,stroke-dasharray: 4 4;
+
+    %% --- 佈局 ---
+
+    START((START)):::round
+
+    subgraph Agent_Layer ["Multi-Agent 協作層 (LangGraph)"]
+        Supervisor[("Supervisor<br/>#128187;<br/>意圖識別<br/>路由決策")]:::core
+        Researcher[("Researcher<br/>#129528;<br/>情報收集<br/>SOP 檢索")]:::core
+        Responder[("Responder<br/>#128737;<br/>敏感操作執行")]:::core
     end
 
-    subgraph Tool_Layer ["🛠️ 工具與執行層 (MCP)"]
-        safe_tools[["Safe Tools"]]:::tool
-        reflect{"Reflection<br>稽核節點"}:::reflect
-        sensitive_tools[["Sensitive Tools"]]:::tool
+    subgraph Tool_Layer ["工具與執行層 (MCP)"]
+        safe_tools[("Safe Tools<br/>#128293;<br/>(Geo-IP, SQLite)")]:::tool
+        reflect[("Reflection<br/>#128269;<br/>稽核節點")]:::reflect
+        sensitive_tools[("Sensitive Tools<br/>#128274;<br/>(Block IP Tool)")]:::tool
     end
 
-    END_NODE((END))
+    END_NODE((END)):::round
 
-    %% 向下控制流 (實線加長 ---> 拉開排版空間)
-    START --> Supervisor
+    %% --- 連接 (消除箭頭) ---
 
-    Supervisor --->|"Decision: Researcher"| Researcher
-    Supervisor --->|"Decision: Responder"| Responder
-    Supervisor -->|"Decision: FINISH"| END_NODE
+    START --- Supervisor
 
-    Researcher --->|"呼叫情報/SOP工具"| safe_tools
-    Responder --->|"提報封鎖"| reflect
-    reflect --->|"通過審批 (HITL)"| sensitive_tools
+    %% 向下控制流
+    Supervisor --- Researcher:::core
+    Supervisor --- Responder:::core
+    Supervisor --- END_NODE
 
-    %% 向上資料/狀態回傳流 (改用虛線 -.-> 降低視覺混亂感)
-    safe_tools -.->|"回傳資料"| Supervisor
-    Researcher -.->|"純文字回覆"| Supervisor
+    %% Researcher 工具呼叫
+    Researcher --- safe_tools:::tool
 
-    reflect -.->|"分數不足攔截"| Supervisor
-    sensitive_tools -.->|"回傳封鎖結果"| Supervisor
-    Responder -.->|"純文字回覆"| Supervisor
+    %% Responder 提報
+    Responder --- reflect:::reflect
+
+    %% Reflection 通過
+    reflect --- sensitive_tools:::tool
+
+    %% --- 向上資料流 (虛線，無箭頭) ---
+
+    safe_tools --- Supervisor:::core
+    Researcher --- Supervisor:::core
+
+    reflect --- Supervisor:::core
+    sensitive_tools --- Supervisor:::core
+    Responder --- Supervisor:::core
+
+    %% --- 消除醜醜的黃色背景，改為透明 + 淡灰色邊框 ---
+    style Agent_Layer fill:transparent,stroke:#e2e8f0,stroke-width:1px
+    style Tool_Layer fill:transparent,stroke:#e2e8f0,stroke-width:1px
 ```
