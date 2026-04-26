@@ -24,26 +24,45 @@
 ## 系統架構圖 (Architecture)
 ```mermaid
 graph TD
-    classDef core fill:#1e293b,stroke:#3b82f6,stroke-width:2px,color:#fff;
-    classDef tool fill:#0f172a,stroke:#10b981,stroke-width:2px,color:#fff;
-    classDef reflect fill:#7c2d12,stroke:#f97316,stroke-width:2px,color:#fff;
+    %% 定義樣式 (加入 rx, ry 增加現代感圓角)
+    classDef core fill:#1e293b,stroke:#3b82f6,stroke-width:2px,color:#fff,rx:8,ry:8;
+    classDef tool fill:#0f172a,stroke:#10b981,stroke-width:2px,color:#fff,rx:8,ry:8;
+    classDef reflect fill:#7c2d12,stroke:#f97316,stroke-width:2px,color:#fff,rx:8,ry:8;
     classDef default fill:#334155,stroke:#64748b,color:#fff;
 
-    START((START)) --> Supervisor:::core
+    START((START))
 
-    Supervisor -->|"Decision: Researcher"| Researcher:::core
-    Supervisor -->|"Decision: Responder"| Responder:::core
-    Supervisor -->|"Decision: FINISH"| END_NODE((END))
+    %% 使用 Subgraph 將不同架構層級區分開來
+    subgraph Agent_Layer ["🤖 Agent 協作層 (LangGraph)"]
+        Supervisor{{"Supervisor"}}:::core
+        Researcher{{"Researcher"}}:::core
+        Responder{{"Responder"}}:::core
+    end
 
-    Researcher -->|"呼叫情報/SOP工具"| safe_tools[[Safe Tools]]:::tool
-    Researcher -->|"純文字回覆"| Supervisor
-    safe_tools -->|"回傳資料"| Supervisor
+    subgraph Tool_Layer ["🛠️ 工具與執行層 (MCP)"]
+        safe_tools[["Safe Tools"]]:::tool
+        reflect{"Reflection<br>稽核節點"}:::reflect
+        sensitive_tools[["Sensitive Tools"]]:::tool
+    end
 
-    Responder -->|"提報封鎖"| reflect{Reflection<br>稽核節點}:::reflect
-    Responder -->|"純文字回覆"| Supervisor
+    END_NODE((END))
 
-    reflect -->|"分數不足攔截"| Supervisor
-    reflect -->|"通過審批 (HITL)"| sensitive_tools[[Sensitive Tools]]:::tool
-    
-    sensitive_tools -->|"回傳封鎖結果"| Supervisor
+    %% 向下控制流 (實線加長 ---> 拉開排版空間)
+    START --> Supervisor
+
+    Supervisor --->|"Decision: Researcher"| Researcher
+    Supervisor --->|"Decision: Responder"| Responder
+    Supervisor -->|"Decision: FINISH"| END_NODE
+
+    Researcher --->|"呼叫情報/SOP工具"| safe_tools
+    Responder --->|"提報封鎖"| reflect
+    reflect --->|"通過審批 (HITL)"| sensitive_tools
+
+    %% 向上資料/狀態回傳流 (改用虛線 -.-> 降低視覺混亂感)
+    safe_tools -.->|"回傳資料"| Supervisor
+    Researcher -.->|"純文字回覆"| Supervisor
+
+    reflect -.->|"分數不足攔截"| Supervisor
+    sensitive_tools -.->|"回傳封鎖結果"| Supervisor
+    Responder -.->|"純文字回覆"| Supervisor
 ```
