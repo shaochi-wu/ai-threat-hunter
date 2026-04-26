@@ -22,7 +22,7 @@
 ---
 
 ## 系統架構圖 (Architecture)
-
+```mermaid
 graph TD
     classDef core fill:#1e293b,stroke:#3b82f6,stroke-width:2px,color:#fff;
     classDef tool fill:#0f172a,stroke:#10b981,stroke-width:2px,color:#fff;
@@ -46,3 +46,4 @@ graph TD
     reflect -->|通過審批 (HITL)| sensitive_tools[[Sensitive Tools]]:::tool
     
     sensitive_tools -->|回傳封鎖結果| Supervisor
+```
