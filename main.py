@@ -282,7 +282,16 @@ async def chat_endpoint(request: ChatRequest):
     print(f"{'='*50}")
 
     try:
-        config = {"configurable": {"thread_id": request.session_id}}
+        config = {
+            "configurable": {
+                "thread_id": request.session_id
+            },
+            "tags": ["prod", "threat_analysis"],
+            "metadata": {
+                "session_id": request.session_id,
+                "user_query_type": "block_request" if "封鎖" in request.message else "general"
+            }
+        }
         inputs = {"messages": [HumanMessage(content=request.message)]}
         steps = []
         
