@@ -17,6 +17,8 @@ from langchain_groq import ChatGroq
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
 from langchain_classic.retrievers import EnsembleRetriever
+from langchain_classic.retrievers import ContextualCompressionRetriever
+from langchain_classic.retrievers.document_compressors import FlashrankRerank
 from langchain_core.tools import tool
 from langchain_core.messages import HumanMessage, ToolMessage, AIMessage
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
@@ -65,7 +67,15 @@ def init_rag_system():
         retrievers=[bm25_retriever, faiss_retriever],
         weights=[0.5, 0.5] 
     )
-    return hybrid_retriever
+    compressor = FlashrankRerank(top_n=3)
+    
+    # 4. 封裝成壓縮檢索器
+    rerank_retriever = ContextualCompressionRetriever(
+        base_compressor=compressor, 
+        base_retriever=hybrid_retriever
+    )
+    
+    return rerank_retriever
 
 retriever = init_rag_system()
 

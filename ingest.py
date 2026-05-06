@@ -14,8 +14,8 @@ loader = TextLoader("knowledge_base/sop.md", encoding="utf-8")
 documents = loader.load()
 
 print("2. 正在進行文本切塊 (Chunking)...")
-# 設定 chunk_size 為 500 字元，保留 80 字元的重疊(Overlap)以防上下文斷裂
-text_splitter = MarkdownTextSplitter(chunk_size=500, chunk_overlap=80)
+# 設定 chunk_size 為 200 字元，保留 40 字元的重疊(Overlap)以防上下文斷裂
+text_splitter = MarkdownTextSplitter(chunk_size=200, chunk_overlap=40)
 docs = text_splitter.split_documents(documents)
 
 print(f"-> 共切分出 {len(docs)} 個文本塊。")
